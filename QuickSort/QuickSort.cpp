@@ -8,26 +8,32 @@
 #include <thread>
 #include <atomic>
 #include <utility>
+#include <mutex>
 #include "Log.h"
 #include "Timer.h"
 
 
 
 
-std::atomic_int freeThreads = std::thread::hardware_concurrency() >= 2 ? std::thread::hardware_concurrency() - 1 : 0;		// количество свободных потоков железа
+const int numCores = std::thread::hardware_concurrency() >= 2 ? std::thread::hardware_concurrency() - 1 : 0;		// количество свободных потоков железа
+std::mutex mut;
 
 
 
 int nearDegreeTwo(int number)
 {
 	int i = 0;
-	while (freeThreads >= std::pow(2, i))
+	while (numCores >= std::pow(2, i))
 	{
 		++i;
 	}
 	--i;
 	return std::pow(2,i);
 }
+
+
+
+
 
 
 
@@ -57,15 +63,18 @@ void QuickSort(BiIterator first, BiIterator last, Compare cmp)
 		QuickSort(first, left, cmp);
 		QuickSort(right, last, cmp);
 	}
-
 }
-
 
 template <typename BiIterator>
 void QuickSort(BiIterator first, BiIterator last)
 {
 	QuickSort(first, last, std::less_equal< typename std::iterator_traits< BiIterator >::value_type >());
 }
+
+
+
+
+
 
 
 template <typename BiIterator, typename Compare>
@@ -115,7 +124,6 @@ std::pair<std::pair<BiIterator, BiIterator>, std::pair<BiIterator, BiIterator>> 
 	
 }
 
-
 template <typename BiIterator>
 std::pair<std::pair<BiIterator, BiIterator>, std::pair<BiIterator, BiIterator>> QuickSortSinglePass(BiIterator first, BiIterator last)
 {
@@ -124,35 +132,81 @@ std::pair<std::pair<BiIterator, BiIterator>, std::pair<BiIterator, BiIterator>> 
 
 
 
+
+
+
+
 template <typename BiIterator, typename Compare >
 void QuickSortMP(BiIterator first, BiIterator last, Compare cmp)
 {
-	if (freeThreads == 0)
+	if (numCores == 0)
 	{
 		QuickSort(first, last, cmp);
 	}
 
-	int nearDegree = nearDegreeTwo(freeThreads);
+	int nearDegree = nearDegreeTwo(numCores);
 	std::pair<BiIterator, BiIterator> temp;
 	std::pair<std::pair<BiIterator, BiIterator>, std::pair<BiIterator, BiIterator>> p;
 	std::queue<std::pair<BiIterator, BiIterator>> pairForSort;			// содержит пары итераторов, на которые вызовется сортировка
 	pairForSort.push(std::pair<BiIterator, BiIterator>(first, last));
 
+	std::queue<std::thread> threads;
+	std::unique_lock<std::mutex> l(mut, std::defer_lock);
 
-	while (pairForSort.size() != freeThreads)
+
+	auto funForThreadSinglePass = [&pairForSort, &cmp, &l]()
+	{
+		std::pair<std::pair<BiIterator, BiIterator>, std::pair<BiIterator, BiIterator>> pForThreads;
+		std::pair<BiIterator, BiIterator> tempForThreads;
+
+		l.lock();
+		tempForThreads = pairForSort.front();
+		pairForSort.pop();
+		l.unlock();
+
+		pForThreads = QuickSortSinglePass(tempForThreads.first, tempForThreads.second, cmp);
+
+		l.lock();
+		if (pForThreads.first != pForThreads.second)
+		{
+			pairForSort.push(pForThreads.first);
+			pairForSort.push(pForThreads.second);
+		}
+		l.unlock();
+	};
+
+
+	while (pairForSort.size() < numCores)
 	{
 		temp = pairForSort.front();
 		pairForSort.pop();
+
+		int k = pairForSort.size();
+		for (int i = 0; ((i < k) and (i < numCores - k)); ++i)
+		{
+			threads.push(std::thread(funForThreadSinglePass));
+		}
+
 		p = QuickSortSinglePass(temp.first, temp.second, cmp);
 
+		l.lock();
 		if (p.first != p.second)
 		{
 			pairForSort.push(p.first);
 			pairForSort.push(p.second);
 		}
+		l.unlock();
+
+		while (threads.size() != 0)
+		{
+			threads.front().join();
+			threads.pop();
+		}
+
 	}
 
-	std::queue<std::thread> threads;
+	
+
 
 	while (pairForSort.size() != 1)
 	{
@@ -172,7 +226,6 @@ void QuickSortMP(BiIterator first, BiIterator last, Compare cmp)
 
 
 }
-
 
 
 template <typename BiIterator>
@@ -201,9 +254,9 @@ int main()
 
 	for (int i = 0; i < n; ++i)
 	{
-		d.push_back(rand() % RAND_MAX - RAND_MAX / 2);
-		v.push_back(rand() % RAND_MAX - RAND_MAX / 2);
-		l.push_back(rand() % RAND_MAX - RAND_MAX / 2);
+		d.push_back(rand() % (RAND_MAX - RAND_MAX / 2) * 1024 + rand() % 1024);
+		v.push_back(rand() % (RAND_MAX - RAND_MAX / 2) * 1024 + rand() % 1024);
+		l.push_back(rand() % (RAND_MAX - RAND_MAX / 2) * 1024 + rand() % 1024);
 	}
 
 
